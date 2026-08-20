@@ -1,0 +1,363 @@
+const int ledPin = 13;
+unsigned long previousMillis = 0;
+const unsigned long interval = 1000;
+bool ledState = false;
+
+const int photoPin = A0;
+int lightValue = 0;
+
+bool readStart = false;
+
+// Current and previous sensed light state
+// false = dark, true = bright
+bool currentLightState = false;
+bool previousLightState = false;
+
+unsigned long onDuration = 0;
+unsigned long offDuration = 0;
+
+const int maxInputReadings = 150;
+unsigned long onTimes[maxInputReadings];
+unsigned long offTimes[maxInputReadings];
+int onTimesCounter = 0;
+int offTimesCounter = 0;
+
+// Marks when the current light state began
+unsigned long stateStartMillis = 0;
+
+// Thresholds for photoresistor
+const int brightThreshold = 850;
+const int darkThreshold = 800;
+
+const char library[] = {
+  'A','B','C','D','E','F','G','H','I','J','K','L','M',
+  'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+  '0','1','2','3','4','5','6','7','8','9'
+};
+
+const char* morseCodes[] = {
+  ".-","-...","-.-.","-..",".","..-.","--.","....","..",".---",
+  "-.-",".-..","--","-.","---",".--.","--.-",".-.","...","-",
+  "..-","...-",".--","-..-","-.--","--..",
+  "-----",".----","..---","...--","....-",".....","-....","--...","---..","----."
+};
+
+const int librarySize = sizeof(library) / sizeof(library[0]);
+
+// Up to 12 chars + up to 2 spaces + null terminator
+char randomMessage[15];
+const char* randomMorse[15];
+
+
+unsigned long morseUnit = 66;
+
+// positive -> LED ON for that many ms
+// negative -> LED OFF for (-value) * morseUnit ms
+int ledTimes[122];
+int timeCount = 0;
+
+int currentStep = 0;
+unsigned long stepStartTime = 0;
+bool sequenceStarted = false;
+
+char currentMorse[10];
+char currentCode[30];
+
+int convertCounter = 0;
+int morseIndex = 0;
+int currentCodeCounter = 0;
+
+int findLibraryIndex(char c) {
+  for (int i = 0; i < librarySize; i++) {
+    if (library[i] == c) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+
+void makeRandomMessage() {
+  int charCount = random(8, 13);
+  int spaceCount = random(0, 3);
+
+  if (spaceCount > charCount - 1) {
+    spaceCount = charCount - 1;
+  }
+
+  int split1 = -1;
+  int split2 = -1;
+
+  if (spaceCount == 1) {
+    split1 = random(1, charCount);
+  }
+  else if (spaceCount == 2) {
+    split1 = random(1, charCount - 1);
+    split2 = random(split1 + 1, charCount);
+  }
+
+  int msgIndex = 0;
+
+  for (int charIndex = 0; charIndex < charCount; charIndex++) {
+    int libIndex = random(0, librarySize);
+    randomMessage[msgIndex++] = library[libIndex];
+
+    if (spaceCount >= 1 && charIndex + 1 == split1) {
+      randomMessage[msgIndex++] = ' ';
+    }
+    if (spaceCount == 2 && charIndex + 1 == split2) {
+      randomMessage[msgIndex++] = ' ';
+    }
+  }
+
+  randomMessage[msgIndex] = '\0';
+  Serial.println(randomMessage);
+}
+
+void buildRandomMorse() {
+  for (int i = 0; randomMessage[i] != '\0'; i++) {
+    if (randomMessage[i] == ' ') {
+      randomMorse[i] = 0;
+    } else {
+      int index = findLibraryIndex(randomMessage[i]);
+      if (index >= 0) {
+        randomMorse[i] = morseCodes[index];
+      } else {
+        randomMorse[i] = 0;
+      }
+    }
+  }
+}
+
+void buildLedMorseTimes() {
+  timeCount = 0;
+
+  for (int i = 0; randomMessage[i] != '\0'; i++) {
+
+    // If this character is a space, store a word gap
+    if (randomMorse[i] == 0) {
+      ledTimes[timeCount] = -7 * morseUnit;
+      timeCount++;
+    }
+    else {
+      // Go through each symbol in this Morse character
+      for (int j = 0; randomMorse[i][j] != '\0'; j++) {
+
+        char symbol = randomMorse[i][j];
+
+        // Store ON time for dot or dash
+        if (symbol == '.') {
+          ledTimes[timeCount] = morseUnit;
+          timeCount++;
+        }
+        else if (symbol == '-') {
+          ledTimes[timeCount] = 3 * morseUnit;
+          timeCount++;
+        }
+
+        // If another symbol follows in the same letter,
+        // add the gap between symbols
+        if (randomMorse[i][j + 1] != '\0') {
+          ledTimes[timeCount] = -1 * morseUnit;
+          timeCount++;
+        }
+      }
+
+      // If next character exists and is not a space,
+      // add the gap between letters
+      if (randomMessage[i + 1] != '\0' && randomMessage[i + 1] != ' ') {
+        ledTimes[timeCount] = -3 * morseUnit;
+        timeCount++;
+      }
+    }
+  }
+}
+
+
+
+void blinkLedMorse() {
+  if (!sequenceStarted) {
+    currentStep = 0;
+    stepStartTime = millis();
+    sequenceStarted = true;
+  }
+
+  if (currentStep >= timeCount) {  //once the currentStep index surpasses the timeCount, the LED is off for 7 units then loop resets
+    digitalWrite(ledPin, LOW);
+    if (millis() - stepStartTime >= 7 * morseUnit){
+      currentStep = 0;
+      sequenceStarted = false;
+
+    }
+    return;
+  }
+
+
+  int stepValue = ledTimes[currentStep]; // stepValue is the number in ledTimes but duration gives the absolute value of the time
+  unsigned long duration;
+
+  if (stepValue > 0) {
+    digitalWrite(ledPin, HIGH); //this turns on LED for duration
+    duration = stepValue;
+  } else {
+    digitalWrite(ledPin, LOW); //this turns off LED for duration
+    duration = -stepValue;
+  }
+
+  if (millis() - stepStartTime >= duration) { //this checks once the duration is done to go to the next index and make a new start point for stepStartTime
+    currentStep++;
+    stepStartTime = millis();
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  currentMorse[0] = '\0';
+  currentCode[0] = '\0';
+
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+  pinMode(photoPin, INPUT);
+
+  randomSeed(analogRead(A1));
+
+  makeRandomMessage();
+  buildRandomMorse();
+  buildLedMorseTimes();
+
+
+  lightValue = analogRead(photoPin);
+
+  if (lightValue > brightThreshold) {
+    previousLightState = true;
+    readStart = true;
+  } else {
+    previousLightState = false;
+  }
+
+  stateStartMillis = millis();
+}
+
+void readAndStoreTimings() {
+  unsigned long currentMillis = millis();
+  lightValue = analogRead(photoPin);
+  
+  if (lightValue > brightThreshold) {
+    readStart = true;
+  }
+
+  if (lightValue > brightThreshold) {
+    currentLightState = true;
+  }
+  else if (lightValue < darkThreshold) {
+    currentLightState = false;
+  }
+
+  if (readStart == true) {
+    if (currentLightState != previousLightState) {
+      if (previousLightState == true) {
+        onDuration = currentMillis - stateStartMillis;
+
+        if (onDuration >= 50 && onTimesCounter < maxInputReadings) {
+          onTimes[onTimesCounter] = onDuration;
+          //Serial.print("ON duration: ");
+          //Serial.println(onTimes[onTimesCounter]);
+          onTimesCounter++;
+        }
+      }
+      else {
+        offDuration = currentMillis - stateStartMillis;
+
+        if (offDuration >= 50 && offTimesCounter < maxInputReadings) {
+          offTimes[offTimesCounter] = offDuration;
+          //Serial.print("OFF duration: ");
+          //Serial.println(offTimes[offTimesCounter]);
+          offTimesCounter++;
+        }
+      }
+
+      stateStartMillis = currentMillis;
+      previousLightState = currentLightState;
+    }
+  }
+}
+
+void convertToLetters() {
+  currentMorse[morseIndex] = '\0';
+
+  for (int i = 0; i < librarySize; i++) {
+    if (strcmp(currentMorse, morseCodes[i]) == 0) {
+      if (currentCodeCounter < (int)sizeof(currentCode) - 1) {
+        currentCode[currentCodeCounter++] = library[i];
+        currentCode[currentCodeCounter] = '\0';
+      }
+      break;
+    }
+  }
+  Serial.println(currentCode);
+  morseIndex = 0;
+  currentMorse[0] = '\0';
+}
+
+void convertMorse() {
+  unsigned long tolerance = 6;
+
+  if (convertCounter >= onTimesCounter || convertCounter >= offTimesCounter) {
+    return;
+  }
+
+  unsigned long onTime = onTimes[convertCounter];
+  unsigned long offTime = offTimes[convertCounter];
+  /*
+  Serial.print("convertCounter: ");
+  Serial.print(convertCounter);
+  Serial.print(" onTime: ");
+  Serial.print(onTime);
+  Serial.print(" offTime: ");
+  Serial.println(offTime);
+  */
+
+
+  if (onTime >= morseUnit - tolerance && onTime <= morseUnit + tolerance) {
+    if (morseIndex < (int)sizeof(currentMorse) - 1) {
+      currentMorse[morseIndex++] = '.';
+      currentMorse[morseIndex] = '\0';
+    }
+  }
+  else if (onTime >= 3 * morseUnit - tolerance && onTime <= 3 * morseUnit + tolerance) {
+    if (morseIndex < (int)sizeof(currentMorse) - 1) {
+      currentMorse[morseIndex++] = '-';
+      currentMorse[morseIndex] = '\0';
+    }
+  }
+
+  if (offTime >= morseUnit - tolerance && offTime <= morseUnit + tolerance) {
+    convertCounter++;
+  }
+  else if (offTime >= 3 * morseUnit - tolerance && offTime <= 3 * morseUnit + tolerance) {
+    convertToLetters();
+    convertCounter++;
+  }
+  else if (offTime >= 7 * morseUnit - tolerance && offTime <= 7 * morseUnit + tolerance) {
+    convertToLetters();
+
+    if (currentCodeCounter < (int)sizeof(currentCode) - 1) {
+      currentCode[currentCodeCounter++] = ' ';
+      currentCode[currentCodeCounter] = '\0';
+    }
+
+    convertCounter++;
+  }
+}
+
+void loop() {
+  //Serial.println(lightValue);
+  blinkLedMorse();
+  readAndStoreTimings();
+
+
+  if (convertCounter < onTimesCounter && convertCounter < offTimesCounter){
+    convertMorse();
+  }
+}
